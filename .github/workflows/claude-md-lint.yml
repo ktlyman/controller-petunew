@@ -1,0 +1,40 @@
+name: Lint CLAUDE.md
+
+on:
+  push:
+    paths:
+      - "CLAUDE.md"
+      - ".claude/**"
+      - "README.md"
+  pull_request:
+    paths:
+      - "CLAUDE.md"
+      - ".claude/**"
+      - "README.md"
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Lint CLAUDE.md
+        run: npx claude-md-lint@1 . --verbose --fail-under 95
+
+      - name: Upload SARIF (PR only)
+        if: github.event_name == 'pull_request' && always()
+        run: npx claude-md-lint@1 . --sarif > results.sarif
+
+      - name: Upload SARIF to GitHub
+        if: github.event_name == 'pull_request' && always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: results.sarif
