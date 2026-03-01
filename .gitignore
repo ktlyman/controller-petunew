@@ -35,3 +35,9 @@ htmlcov/
 
 # Claude Code local settings
 .claude/settings.local.json
+
+# Reverse engineering artifacts (large binaries)
+re/jadx-output/
+re/raw_dex/
+re/jiagu_unpacker/
+*.apk

@@ -261,11 +261,18 @@ Research of the only fully reverse-engineered pet feeder+camera ([icex2/plaf203]
 └─────────────────────────────────┘
 
 ┌─────────────────────────────────┐
-│  Feeding Channel (UNCONFIRMED)  │  Could be MQTT, HTTP/JSON, or vendor IOTYPE
-│  - Manual feed (dispense)       │  Petlibro uses MQTT; PetUNew protocol unknown
-│  - Feeding schedules            │  Must decompile cn.P2PPetCam APK to confirm
-│  - Feeding history              │
+│  MQTT Channel (CONFIRMED)       │  Eclipse Paho MQTT client bundled in APK
+│  - Manual feed (dispense)       │  Custom service: cn.P2PPetCam.www.UiV2.mqtt.MyMqttService
+│  - Feeding schedules            │  Broker URL/topic format: needs network capture
+│  - Feeding history              │  Reference: Petlibro PLAF203 uses identical pattern
 │  - Device configuration         │
+└─────────────────────────────────┘
+
+┌─────────────────────────────────┐
+│  BLE Channel (CONFIRMED)        │  Used for device provisioning + some models
+│  - WiFi setup / pairing         │  cn.P2PPetCam.www.UiV2.ble.BleService
+│  - Firmware DFU updates         │  Device-specific (not all models)
+│  - Feed audio configuration     │
 └─────────────────────────────────┘
 ```
 
@@ -297,13 +304,33 @@ Quality levels: `MAX=1, HIGH=2, MIDDLE=3, LOW=4, MIN=5`
 Environment modes: `INDOOR_50HZ=0, INDOOR_60HZ=1, OUTDOOR=2, NIGHT=3`
 Video modes: `NORMAL=0, FLIP=1, MIRROR=2, FLIP_MIRROR=3`
 
-### Feeding Commands (UNCONFIRMED — needs APK decompilation)
+### Feeding Commands (MQTT — confirmed, protocol details pending)
 
-Feeding commands are assigned placeholder IDs (`0x7F00-0x7F03`) in the codebase. The actual mechanism will be one of:
+APK decompilation confirmed that PetUNew uses **MQTT** (Eclipse Paho) for feeding commands,
+matching the Petlibro PLAF203 pattern. The APK is protected by Qihoo 360 Jiagu, preventing
+full static analysis. Feeding command IDs (`0x7F00-0x7F03`) in the codebase are placeholders
+that will be replaced with MQTT commands once the exact protocol is captured.
 
-a) **Vendor-specific TUTK IOTYPEs** (>= `0x7000`) sent via `avSendIOCtrl`
-b) **MQTT messages** to a cloud broker (like Petlibro's `MANUAL_FEEDING_SERVICE`)
-c) **Proprietary HTTP/JSON API** to the device or cloud
+**Reference protocol** (Petlibro PLAF203 — same dual-channel architecture):
+
+| Command | MQTT Topic Direction | Payload |
+|---------|---------------------|---------|
+| `MANUAL_FEEDING_SERVICE` | server → device (`service/sub`) | `{"grainNum": 50}` |
+| `GRAIN_OUTPUT_EVENT` | device → server (`event/post`) | `{"type": 2, "actualGrainNum": 50}` |
+| `FEEDING_PLAN_SERVICE` | server → device (`service/sub`) | `{"plans": [{...}]}` |
+| `GET_FEEDING_PLAN_EVENT` | device → server (`event/post`) | (request for plans) |
+
+PetUNew's exact command names and topic structure may differ but will follow a similar pattern.
+
+### Device Models
+
+From APK string resources:
+
+| Model | Product | Features |
+|-------|---------|----------|
+| FX801 | Camera Pet Feeder | Camera + Feeder (primary target) |
+| FX806 | No Camera Pet Feeder | Feeder only, no camera |
+| FX901 | Pet Water Feeder | Water fountain |
 
 ### SMsgAVIoctrlDeviceInfoResp (68 bytes)
 
@@ -340,23 +367,31 @@ A relay can be built from these open-source TUTK implementations:
 - [kroo/wyzecam](https://github.com/kroo/wyzecam) — Python TUTK wrapper
 - [indykoning/PyPI_p2pcam](https://github.com/indykoning/PyPI_p2pcam) — Python P2P camera library
 
-## Reverse Engineering Next Steps
+## Reverse Engineering Status
 
-Camera IOTYPEs are now confirmed. The remaining unknowns are **feeding commands** and their transport channel. To discover them:
+### Completed
 
-1. **Decompile the APK** (highest priority): `jadx cn.P2PPetCam.www.linyuan.apk`
-   - Search for `avSendIOCtrl` — find any vendor-specific IOTYPE constants
-   - Search for MQTT client code (`MqttClient`, `paho`, `eclipse.paho`)
-   - Search for HTTP API calls to cloud endpoints
-   - Look under `com.tutk` and `cn.P2PPetCam` package namespaces
-2. **Network capture** (validates APK findings):
-   - Laptop WiFi hotspot or Raspberry Pi AP (see Eero section below)
-   - `tcpdump -i <if> -s 0 -w capture.pcap 'udp and (port 10000 or port 10001 or port 32761)'`
-   - Also capture TCP for MQTT (1883/8883) and HTTP (80/443)
-3. **Frida hooking** (most precise, needs rooted Android):
-   - Hook `avSendIOCtrl` / `avRecvIOCtrl` to log command IDs and payloads
-   - Hook any MQTT publish calls to see feeding message format
-4. **Compare with [icex2/plaf203](https://github.com/icex2/plaf203)**: The Petlibro feeder has complete MQTT protocol documentation
+- **APK decompilation** (v2.2.26): 360 Jiagu packer blocks static analysis of Java code, but AndroidManifest and native libraries confirmed MQTT + TUTK + BLE triple-channel architecture
+- **TUTK camera commands**: Standard IOTYPEs confirmed via `libAVAPIs.so` JNI symbols
+- **MQTT feeding confirmed**: Eclipse Paho bundled, custom `MyMqttService` in manifest
+- **Petlibro PLAF203 reference**: Full MQTT protocol documented (see [icex2/plaf203](https://github.com/icex2/plaf203))
+- **Device models identified**: FX801 (camera feeder), FX806 (feeder only), FX901 (water feeder)
+
+### Next Steps
+
+1. **Network capture** (highest priority — easiest path to MQTT protocol):
+   - Laptop WiFi hotspot, re-provision feeder to connect through it
+   - Capture MQTT traffic: `tcpdump -i <if> -s 0 -w mqtt.pcap 'tcp and (port 1883 or port 8883)'`
+   - Capture TUTK traffic: `tcpdump -i <if> -s 0 -w tutk.pcap 'udp and (port 10000 or port 10001 or port 32761)'`
+   - Trigger: manual feed, schedule change, camera snapshot
+   - Analyze in Wireshark to extract broker URL, topic structure, and message format
+2. **Android emulator runtime dump** (alternative to network capture):
+   - Run APK in rooted Android emulator
+   - Dump decrypted dex from `/data/data/cn.P2PPetCam.www.linyuan/.jiagu/`
+   - Decompile with jadx for full Java source
+3. **Older APK version** (pre-v2.1.x may lack 360 Jiagu protection)
+
+Detailed findings: [`re/FINDINGS.md`](re/FINDINGS.md)
 
 ### Network Capture with Eero Router
 
@@ -374,10 +409,14 @@ The laptop hotspot approach requires no extra hardware and captures all traffic.
 
 PetUNew, WOPET, and PetFun feeders share the same P2P platform and hardware. If your feeder works with any of these apps, this agent should work with it:
 
-| Brand | App Package | Notes |
-|-------|-------------|-------|
-| PetUNew | `cn.P2PPetCam.www.linyuan` | Primary target |
-| PetFun | `cn.P2PPetCam.www` | Same base namespace |
+| Brand | App / Contact | Notes |
+|-------|---------------|-------|
+| PetUNew / PetU | `cn.P2PPetCam.www.linyuan`, petusound.com | Primary target |
+| PetFun | `cn.P2PPetCam.www` | Same base namespace, models 901/806/606 |
+| DrFeeder | DrFeeder@goldstore.com | Same app, WeChat integration |
+| Skymee / MCO | skymee.com | Same app, MCO platform variant |
 | WOPET | Separate (older P2P models) | Same hardware, interchangeable |
+
+All brands share the same multi-brand white-label app from "Jk" organization (Guangzhou, China).
 
 **Note**: Some newer WOPET models have migrated to the Tuya platform. Those would use a different integration path (tinytuya / LocalTuya).
